@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher
@@ -8,71 +9,156 @@ from aiogram.filters.command import CommandObject
 from openai import AsyncOpenAI
 
 
-# =========================
+# ==========================================
 # НАСТРОЙКИ
-# =========================
+# ==========================================
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 
+# Модель Gemini через OpenRouter
 MODEL = "google/gemini-3.1-flash-lite-preview"
 
+# Путь webhook
 WEBHOOK_PATH = "/telegram"
 
 
-# =========================
-# КЛИЕНТЫ
-# =========================
+# ==========================================
+# TELEGRAM
+# ==========================================
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+
+# ==========================================
+# OPENROUTER
+# ==========================================
 
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY
 )
 
-app = FastAPI()
+
+# ==========================================
+# WEBHOOK
+# ==========================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+
+    if not render_url:
+        print("❌ RENDER_EXTERNAL_URL не найдена!")
+
+    else:
+
+        webhook_url = render_url + WEBHOOK_PATH
+
+        try:
+
+            result = await bot.set_webhook(
+                url=webhook_url,
+                secret_token=WEBHOOK_SECRET
+            )
+
+            print("========================================")
+            print("🤖 Telegram AI Bot запущен!")
+            print("Webhook URL:", webhook_url)
+            print("set_webhook result:", result)
+
+            # Проверяем webhook
+            info = await bot.get_webhook_info()
+
+            print("----------------------------------------")
+            print("Telegram webhook info:")
+            print("URL:", info.url)
+            print("Pending updates:", info.pending_update_count)
+            print("Last error:", info.last_error_message)
+            print("----------------------------------------")
+            print("========================================")
+
+        except Exception as e:
+
+            print("❌ WEBHOOK ERROR:")
+            print(repr(e))
+
+    yield
+
+    # При остановке Render удаляем webhook
+    try:
+
+        await bot.delete_webhook()
+
+        await bot.session.close()
+        await client.close()
+
+        print("🛑 Бот остановлен.")
+
+    except Exception as e:
+
+        print("Shutdown error:", repr(e))
 
 
-# =========================
+# ==========================================
+# FASTAPI
+# ==========================================
+
+app = FastAPI(
+    lifespan=lifespan
+)
+
+
+# ==========================================
 # START
-# =========================
+# ==========================================
 
 @dp.message(CommandStart())
 async def start(message: Message):
+
     await message.answer(
         "Привет! 🤖\n\n"
-        "В личном чате просто напиши сообщение.\n"
-        "В группе используй:\n"
+        "Я AI-бот на Gemini.\n\n"
+        "💬 В личном чате просто напиши сообщение.\n"
+        "👥 В группе используй:\n"
         "/ask твой вопрос"
     )
 
 
-# =========================
+# ==========================================
 # /ASK
-# =========================
+# ==========================================
 
 @dp.message(Command("ask"))
 async def ask_command(
     message: Message,
     command: CommandObject
 ):
+
+    # Проверяем наличие текста после /ask
     if not command.args:
+
         await message.answer(
             "❗ После /ask нужно написать вопрос.\n\n"
-            "Например:\n"
+            "Пример:\n"
             "/ask Что такое Python?"
         )
+
         return
 
-    await ask_ai(message, command.args)
+    # Отправляем вопрос AI
+    await ask_ai(
+        message,
+        command.args
+    )
 
 
-# =========================
+# ==========================================
 # ОБЫЧНЫЕ СООБЩЕНИЯ
-# =========================
+# ==========================================
 
 @dp.message()
 async def normal_message(message: Message):
@@ -81,26 +167,39 @@ async def normal_message(message: Message):
     if message.chat.type != "private":
         return
 
+    # Игнорируем сообщения без текста
     if not message.text:
         return
 
-    await ask_ai(message, message.text)
+    # В личке отвечаем без /ask
+    await ask_ai(
+        message,
+        message.text
+    )
 
 
-# =========================
-# GEMINI ЧЕРЕЗ OPENROUTER
-# =========================
+# ==========================================
+# AI
+# ==========================================
 
-async def ask_ai(message: Message, text: str):
+async def ask_ai(
+    message: Message,
+    text: str
+):
 
     try:
+
+        # Показываем "печатает..."
         await bot.send_chat_action(
             chat_id=message.chat.id,
             action="typing"
         )
 
+        # Запрос к OpenRouter
         response = await client.chat.completions.create(
+
             model=MODEL,
+
             messages=[
                 {
                     "role": "system",
@@ -109,6 +208,7 @@ async def ask_ai(message: Message, text: str):
                         "AI-ассистент в Telegram."
                     )
                 },
+
                 {
                     "role": "user",
                     "content": text
@@ -116,81 +216,96 @@ async def ask_ai(message: Message, text: str):
             ]
         )
 
+        # Получаем ответ Gemini
         answer = response.choices[0].message.content
 
         if not answer:
-            answer = "Не удалось получить ответ от Gemini."
 
-        await message.answer(answer)
+            answer = (
+                "⚠️ Gemini не вернула текстовый ответ."
+            )
+
+        # Отправляем ответ
+        await message.answer(
+            answer
+        )
 
     except Exception as e:
-        print("ERROR:", repr(e))
+
+        print("================================")
+        print("❌ AI ERROR")
+        print(repr(e))
+        print("================================")
 
         await message.answer(
             "⚠️ Произошла ошибка при обращении к AI."
         )
 
 
-# =========================
-# WEBHOOK
-# =========================
+# ==========================================
+# ПРОВЕРКА RENDER
+# ==========================================
 
 @app.get("/")
 async def home():
+
     return {
         "status": "online",
-        "bot": "Telegram AI Bot"
+        "bot": "Telegram AI Bot",
+        "webhook": "active"
     }
 
 
-@app.post(WEBHOOK_PATH)
-async def telegram_webhook(request: Request):
+# ==========================================
+# TELEGRAM WEBHOOK ENDPOINT
+# ==========================================
 
+@app.post(WEBHOOK_PATH)
+async def telegram_webhook(
+    request: Request
+):
+
+    # Проверяем секрет Telegram
     secret = request.headers.get(
         "X-Telegram-Bot-Api-Secret-Token"
     )
 
     if secret != WEBHOOK_SECRET:
-        return {"ok": False}
 
-    data = await request.json()
+        print("❌ Неверный webhook secret")
 
-    update = Update.model_validate(
-        data,
-        context={"bot": bot}
-    )
+        return {
+            "ok": False
+        }
 
-    await dp.feed_update(bot, update)
+    try:
 
-    return {"ok": True}
+        # Получаем JSON от Telegram
+        data = await request.json()
 
+        # Создаём Update aiogram
+        update = Update.model_validate(
+            data,
+            context={
+                "bot": bot
+            }
+        )
 
-# =========================
-# ЗАПУСК WEBHOOK
-# =========================
+        # Передаём update в Dispatcher
+        await dp.feed_update(
+            bot,
+            update
+        )
 
-@app.on_event("startup")
-async def startup():
+        return {
+            "ok": True
+        }
 
-    render_url = os.environ["RENDER_EXTERNAL_URL"]
+    except Exception as e:
 
-    webhook_url = render_url + WEBHOOK_PATH
+        print("❌ TELEGRAM UPDATE ERROR:")
+        print(repr(e))
 
-    await bot.set_webhook(
-        url=webhook_url,
-        secret_token=WEBHOOK_SECRET
-    )
-
-    print("================================")
-    print("🤖 Telegram AI Bot запущен!")
-    print("Webhook:", webhook_url)
-    print("================================")
-
-
-@app.on_event("shutdown")
-async def shutdown():
-
-    await bot.delete_webhook()
-
-    await bot.session.close()
-    await client.close()
+        return {
+            "ok": False
+        }
