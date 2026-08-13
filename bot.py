@@ -83,18 +83,16 @@ async def lifespan(app: FastAPI):
             print(type(e).__name__)
             print(str(e))
 
-    yield
+   yield
 
-    try:
-        await bot.delete_webhook()
-        await bot.session.close()
-        await client.close()
+try:
+    await bot.session.close()
+    await client.close()
 
-        print("🛑 Бот остановлен.")
+    print("🛑 Бот остановлен.")
 
-    except Exception as e:
-        print("Shutdown error:", repr(e))
-
+except Exception as e:
+    print("Shutdown error:", repr(e))
 
 # ==========================================
 # FASTAPI
