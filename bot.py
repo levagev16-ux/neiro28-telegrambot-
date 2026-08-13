@@ -1,5 +1,5 @@
 import os
-import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher
@@ -34,7 +34,84 @@ client = AsyncOpenAI(
     api_key=OPENROUTER_API_KEY
 )
 
-app = FastAPI()
+
+# =========================
+# WEBHOOK SETUP
+# =========================
+
+async def setup_webhook():
+    try:
+        render_url = os.environ["RENDER_EXTERNAL_URL"]
+        webhook_url = render_url + WEBHOOK_PATH
+
+        print("================================")
+        print("🤖 Настройка Telegram webhook...")
+        print("Webhook URL:", webhook_url)
+
+        result = await bot.set_webhook(
+            url=webhook_url,
+            secret_token=WEBHOOK_SECRET
+        )
+
+        print("set_webhook result:", result)
+
+        info = await bot.get_webhook_info()
+
+        print("--------------------------------")
+        print("Telegram webhook info:")
+        print("URL:", info.url)
+        print("Pending updates:", info.pending_update_count)
+        print("Last error:", info.last_error_message)
+        print("--------------------------------")
+
+        print("🤖 Telegram AI Bot запущен!")
+        print("================================")
+
+    except Exception as e:
+        print("❌ WEBHOOK SETUP ERROR:", repr(e))
+
+
+# =========================
+# STARTUP / SHUTDOWN
+# =========================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    print("🚀 FastAPI запускается...")
+
+    # Устанавливаем webhook ДО того,
+    # как приложение полностью запустится
+    await setup_webhook()
+
+    print("🚀 FastAPI успешно запущен!")
+
+    try:
+        yield
+
+    finally:
+        print("🛑 FastAPI shutting down...")
+
+        try:
+            await bot.delete_webhook()
+            print("Telegram webhook удалён.")
+        except Exception as e:
+            print("Webhook shutdown error:", repr(e))
+
+        try:
+            await bot.session.close()
+            print("Telegram bot session closed.")
+        except Exception as e:
+            print("Bot shutdown error:", repr(e))
+
+        try:
+            await client.close()
+            print("OpenRouter client closed.")
+        except Exception as e:
+            print("OpenRouter shutdown error:", repr(e))
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 # =========================
@@ -43,6 +120,7 @@ app = FastAPI()
 
 @dp.message(CommandStart())
 async def start(message: Message):
+
     await message.answer(
         "Привет! 🤖\n\n"
         "В личном чате просто напиши сообщение.\n"
@@ -60,6 +138,7 @@ async def ask_command(
     message: Message,
     command: CommandObject
 ):
+
     if not command.args:
         await message.answer(
             "❗ После /ask нужно написать вопрос.\n\n"
@@ -96,6 +175,7 @@ async def normal_message(message: Message):
 async def ask_ai(message: Message, text: str):
 
     try:
+
         await bot.send_chat_action(
             chat_id=message.chat.id,
             action="typing"
@@ -103,10 +183,7 @@ async def ask_ai(message: Message, text: str):
 
         response = await client.chat.completions.create(
             model=MODEL,
-
-            # Ограничиваем максимальный ответ
             max_tokens=2048,
-
             messages=[
                 {
                     "role": "system",
@@ -131,10 +208,8 @@ async def ask_ai(message: Message, text: str):
 
     except Exception as e:
 
-        # Подробная ошибка остаётся ТОЛЬКО в Render Logs
-        print("AI ERROR:", repr(e))
+        print("❌ AI ERROR:", repr(e))
 
-        # Пользователь видит только обычное сообщение
         try:
             await message.answer(
                 "⚠️ Произошла ошибка при обращении к AI."
@@ -149,6 +224,7 @@ async def ask_ai(message: Message, text: str):
 
 @app.get("/")
 async def home():
+
     return {
         "status": "online",
         "bot": "Telegram AI Bot",
@@ -169,12 +245,16 @@ async def telegram_webhook(request: Request):
     )
 
     if secret != WEBHOOK_SECRET:
+
+        print("❌ Invalid Telegram webhook secret")
+
         return {
             "ok": False,
             "error": "Invalid secret"
         }
 
     try:
+
         data = await request.json()
 
         update = Update.model_validate(
@@ -182,100 +262,23 @@ async def telegram_webhook(request: Request):
             context={"bot": bot}
         )
 
-        await dp.feed_update(bot, update)
+        await dp.feed_update(
+            bot,
+            update
+        )
 
-        return {"ok": True}
+        return {
+            "ok": True
+        }
 
     except Exception as e:
 
-        print("WEBHOOK ERROR:", repr(e))
+        print(
+            "❌ WEBHOOK ERROR:",
+            repr(e)
+        )
 
         return {
             "ok": False,
             "error": "Webhook processing error"
         }
-
-
-# =========================
-# УСТАНОВКА WEBHOOK
-# =========================
-
-async def setup_webhook():
-
-    try:
-
-        render_url = os.environ["RENDER_EXTERNAL_URL"]
-
-        webhook_url = render_url + WEBHOOK_PATH
-
-        print("================================")
-        print("🤖 Настройка Telegram webhook...")
-        print("Webhook URL:", webhook_url)
-
-        result = await bot.set_webhook(
-            url=webhook_url,
-            secret_token=WEBHOOK_SECRET
-        )
-
-        print("set_webhook result:", result)
-
-        info = await bot.get_webhook_info()
-
-        print("--------------------------------")
-        print("Telegram webhook info:")
-        print("URL:", info.url)
-        print(
-            "Pending updates:",
-            info.pending_update_count
-        )
-        print(
-            "Last error:",
-            info.last_error_message
-        )
-        print("--------------------------------")
-
-        print("🤖 Telegram AI Bot запущен!")
-        print("================================")
-
-    except Exception as e:
-
-        print(
-            "WEBHOOK SETUP ERROR:",
-            repr(e)
-        )
-
-
-# =========================
-# STARTUP
-# =========================
-
-@app.on_event("startup")
-async def startup():
-
-    # Запускаем настройку webhook отдельно,
-    # чтобы FastAPI не зависал на запуске.
-    asyncio.create_task(
-        setup_webhook()
-    )
-
-    print("🚀 FastAPI успешно запущен!")
-
-
-# =========================
-# SHUTDOWN
-# =========================
-
-@app.on_event("shutdown")
-async def shutdown():
-
-    print("🛑 FastAPI shutting down...")
-
-    try:
-        await bot.session.close()
-    except Exception as e:
-        print("Bot shutdown error:", repr(e))
-
-    try:
-        await client.close()
-    except Exception as e:
-        print("OpenRouter shutdown error:", repr(e))
