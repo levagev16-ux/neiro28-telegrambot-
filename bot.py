@@ -36,7 +36,7 @@ client = AsyncOpenAI(
 
 
 # =========================
-# WEBHOOK SETUP
+# WEBHOOK
 # =========================
 
 async def setup_webhook():
@@ -64,6 +64,12 @@ async def setup_webhook():
         print("Last error:", info.last_error_message)
         print("--------------------------------")
 
+        if info.last_error_message:
+            print(
+                "⚠️ Telegram сообщает об ошибке:",
+                info.last_error_message
+            )
+
         print("🤖 Telegram AI Bot запущен!")
         print("================================")
 
@@ -72,7 +78,7 @@ async def setup_webhook():
 
 
 # =========================
-# STARTUP / SHUTDOWN
+# LIFESPAN
 # =========================
 
 @asynccontextmanager
@@ -80,35 +86,30 @@ async def lifespan(app: FastAPI):
 
     print("🚀 FastAPI запускается...")
 
-    # Устанавливаем webhook ДО того,
-    # как приложение полностью запустится
     await setup_webhook()
 
     print("🚀 FastAPI успешно запущен!")
 
+    yield
+
+    # ВАЖНО:
+    # webhook здесь НЕ удаляем.
+    # Render может перезапускать процесс,
+    # а Telegram должен продолжать знать URL webhook.
+
+    print("🛑 FastAPI shutting down...")
+
     try:
-        yield
+        await bot.session.close()
+        print("Telegram bot session closed.")
+    except Exception as e:
+        print("Bot shutdown error:", repr(e))
 
-    finally:
-        print("🛑 FastAPI shutting down...")
-
-        try:
-            await bot.delete_webhook()
-            print("Telegram webhook удалён.")
-        except Exception as e:
-            print("Webhook shutdown error:", repr(e))
-
-        try:
-            await bot.session.close()
-            print("Telegram bot session closed.")
-        except Exception as e:
-            print("Bot shutdown error:", repr(e))
-
-        try:
-            await client.close()
-            print("OpenRouter client closed.")
-        except Exception as e:
-            print("OpenRouter shutdown error:", repr(e))
+    try:
+        await client.close()
+        print("OpenRouter client closed.")
+    except Exception as e:
+        print("OpenRouter shutdown error:", repr(e))
 
 
 app = FastAPI(lifespan=lifespan)
@@ -157,11 +158,9 @@ async def ask_command(
 @dp.message()
 async def normal_message(message: Message):
 
-    # В группах обычные сообщения игнорируем
     if message.chat.type != "private":
         return
 
-    # Если это не текст — игнорируем
     if not message.text:
         return
 
@@ -169,7 +168,7 @@ async def normal_message(message: Message):
 
 
 # =========================
-# GEMINI ЧЕРЕЗ OPENROUTER
+# AI
 # =========================
 
 async def ask_ai(message: Message, text: str):
@@ -179,6 +178,10 @@ async def ask_ai(message: Message, text: str):
         await bot.send_chat_action(
             chat_id=message.chat.id,
             action="typing"
+        )
+
+        print(
+            f"🤖 AI запрос от {message.from_user.id}: {text}"
         )
 
         response = await client.chat.completions.create(
@@ -206,6 +209,8 @@ async def ask_ai(message: Message, text: str):
 
         await message.answer(answer)
 
+        print("✅ Ответ AI отправлен.")
+
     except Exception as e:
 
         print("❌ AI ERROR:", repr(e))
@@ -214,12 +219,15 @@ async def ask_ai(message: Message, text: str):
             await message.answer(
                 "⚠️ Произошла ошибка при обращении к AI."
             )
-        except Exception:
-            pass
+        except Exception as send_error:
+            print(
+                "❌ Ошибка отправки сообщения:",
+                repr(send_error)
+            )
 
 
 # =========================
-# ГЛАВНАЯ СТРАНИЦА
+# ГЛАВНАЯ
 # =========================
 
 @app.get("/")
@@ -239,7 +247,6 @@ async def home():
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
 
-    # Проверяем секрет Telegram
     secret = request.headers.get(
         "X-Telegram-Bot-Api-Secret-Token"
     )
@@ -261,6 +268,8 @@ async def telegram_webhook(request: Request):
             data,
             context={"bot": bot}
         )
+
+        print("📩 Telegram update получен.")
 
         await dp.feed_update(
             bot,
