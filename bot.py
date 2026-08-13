@@ -20,6 +20,7 @@ WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 # Gemini через OpenRouter
 MODEL = "google/gemini-3.1-flash-lite-preview"
 
+# Webhook путь
 WEBHOOK_PATH = "/telegram"
 
 
@@ -42,7 +43,7 @@ client = AsyncOpenAI(
 
 
 # ==========================================
-# WEBHOOK STARTUP
+# WEBHOOK / STARTUP
 # ==========================================
 
 @asynccontextmanager
@@ -54,11 +55,9 @@ async def lifespan(app: FastAPI):
         print("❌ RENDER_EXTERNAL_URL не найдена!")
 
     else:
-
         webhook_url = render_url + WEBHOOK_PATH
 
         try:
-
             result = await bot.set_webhook(
                 url=webhook_url,
                 secret_token=WEBHOOK_SECRET
@@ -80,25 +79,20 @@ async def lifespan(app: FastAPI):
             print("========================================")
 
         except Exception as e:
-
-            print("❌ WEBHOOK ERROR")
+            print("❌ WEBHOOK ERROR:")
             print(type(e).__name__)
             print(str(e))
-            print(repr(e))
 
     yield
 
     try:
-
         await bot.delete_webhook()
-
         await bot.session.close()
         await client.close()
 
         print("🛑 Бот остановлен.")
 
     except Exception as e:
-
         print("Shutdown error:", repr(e))
 
 
@@ -147,7 +141,6 @@ async def ask_command(
 
         return
 
-    # Передаём текст после /ask в AI
     await ask_ai(
         message,
         command.args
@@ -165,11 +158,11 @@ async def normal_message(message: Message):
     if message.chat.type != "private":
         return
 
-    # Игнорируем сообщения без текста
+    # Сообщения без текста игнорируем
     if not message.text:
         return
 
-    # В личке /ask НЕ нужен
+    # В личке /ask не нужен
     await ask_ai(
         message,
         message.text
@@ -177,7 +170,7 @@ async def normal_message(message: Message):
 
 
 # ==========================================
-# AI / OPENROUTER / GEMINI
+# GEMINI ЧЕРЕЗ OPENROUTER
 # ==========================================
 
 async def ask_ai(
@@ -187,12 +180,6 @@ async def ask_ai(
 
     try:
 
-        print("========================================")
-        print("🤖 Новый AI-запрос")
-        print("Текст:", text)
-        print("Модель:", MODEL)
-        print("Отправляем запрос в OpenRouter...")
-
         await bot.send_chat_action(
             chat_id=message.chat.id,
             action="typing"
@@ -200,6 +187,11 @@ async def ask_ai(
 
         response = await client.chat.completions.create(
             model=MODEL,
+
+            # Ограничиваем максимальный ответ,
+            # чтобы OpenRouter не требовал 65536 токенов
+            max_tokens=4096,
+
             messages=[
                 {
                     "role": "system",
@@ -215,42 +207,28 @@ async def ask_ai(
             ]
         )
 
-        print("✅ OpenRouter ответил!")
-
         answer = response.choices[0].message.content
 
         if not answer:
-
             answer = (
-                "⚠️ Gemini не вернула текстовый ответ."
+                "Не удалось получить ответ от Gemini."
             )
 
         await message.answer(answer)
 
-        print("✅ Ответ отправлен в Telegram")
-        print("========================================")
-
     except Exception as e:
 
+        # Подробная ошибка остаётся в логах Render,
+        # но пользователю показываем обычное сообщение.
         print("========================================")
-        print("❌❌❌ AI ERROR ❌❌❌")
-        print("Тип ошибки:", type(e).__name__)
+        print("❌ AI ERROR")
+        print("Тип:", type(e).__name__)
         print("Ошибка:", str(e))
         print("Полная ошибка:", repr(e))
-        print("❌❌❌ END ERROR ❌❌❌")
         print("========================================")
 
-        # ВРЕМЕННО показываем ошибку,
-        # чтобы найти проблему
-        error_text = str(e)
-
-        if not error_text:
-            error_text = "Неизвестная ошибка"
-
         await message.answer(
-            "⚠️ Ошибка AI:\n\n"
-            f"{type(e).__name__}: "
-            f"{error_text[:1500]}"
+            "⚠️ Произошла ошибка при обращении к AI."
         )
 
 
@@ -292,10 +270,8 @@ async def telegram_webhook(
 
     try:
 
-        # Получаем данные от Telegram
         data = await request.json()
 
-        # Превращаем JSON в Update
         update = Update.model_validate(
             data,
             context={
@@ -303,7 +279,6 @@ async def telegram_webhook(
             }
         )
 
-        # Передаём сообщение aiogram
         await dp.feed_update(
             bot,
             update
