@@ -8,13 +8,22 @@ from aiogram.filters.command import CommandObject
 from openai import AsyncOpenAI
 
 
+# =========================
+# НАСТРОЙКИ
+# =========================
+
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
+WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 
 MODEL = "google/gemini-3.1-flash-lite-preview"
 
 WEBHOOK_PATH = "/telegram"
-WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
+
+
+# =========================
+# КЛИЕНТЫ
+# =========================
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -35,7 +44,7 @@ app = FastAPI()
 async def start(message: Message):
     await message.answer(
         "Привет! 🤖\n\n"
-        "В личке просто напиши сообщение.\n"
+        "В личном чате просто напиши сообщение.\n"
         "В группе используй:\n"
         "/ask твой вопрос"
     )
@@ -52,7 +61,7 @@ async def ask_command(
 ):
     if not command.args:
         await message.answer(
-            "❗ Напиши вопрос после /ask\n\n"
+            "❗ После /ask нужно написать вопрос.\n\n"
             "Например:\n"
             "/ask Что такое Python?"
         )
@@ -79,13 +88,12 @@ async def normal_message(message: Message):
 
 
 # =========================
-# GEMINI
+# GEMINI ЧЕРЕЗ OPENROUTER
 # =========================
 
 async def ask_ai(message: Message, text: str):
 
     try:
-
         await bot.send_chat_action(
             chat_id=message.chat.id,
             action="typing"
@@ -116,7 +124,6 @@ async def ask_ai(message: Message, text: str):
         await message.answer(answer)
 
     except Exception as e:
-
         print("ERROR:", repr(e))
 
         await message.answer(
@@ -139,15 +146,51 @@ async def home():
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
 
-    secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    secret = request.headers.get(
+        "X-Telegram-Bot-Api-Secret-Token"
+    )
 
     if secret != WEBHOOK_SECRET:
         return {"ok": False}
 
     data = await request.json()
 
-    update = Update.model_validate(data, context={"bot": bot})
+    update = Update.model_validate(
+        data,
+        context={"bot": bot}
+    )
 
     await dp.feed_update(bot, update)
 
     return {"ok": True}
+
+
+# =========================
+# ЗАПУСК WEBHOOK
+# =========================
+
+@app.on_event("startup")
+async def startup():
+
+    render_url = os.environ["RENDER_EXTERNAL_URL"]
+
+    webhook_url = render_url + WEBHOOK_PATH
+
+    await bot.set_webhook(
+        url=webhook_url,
+        secret_token=WEBHOOK_SECRET
+    )
+
+    print("================================")
+    print("🤖 Telegram AI Bot запущен!")
+    print("Webhook:", webhook_url)
+    print("================================")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+
+    await bot.delete_webhook()
+
+    await bot.session.close()
+    await client.close()
