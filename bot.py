@@ -1,4 +1,5 @@
 import os
+import httpx
 import logging
 from fastapi import FastAPI, Request, Header
 from aiogram import Bot, Dispatcher
@@ -23,9 +24,13 @@ app = FastAPI()
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
 
+# Создаём кастомный HTTP-клиент для фикса ошибки 'proxies' в httpx на Vercel
+custom_http_client = httpx.AsyncClient()
+
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY
+    api_key=OPENROUTER_API_KEY,
+    http_client=custom_http_client
 ) if OPENROUTER_API_KEY else None
 
 
@@ -42,7 +47,7 @@ async def start(message: Message):
 @dp.message(Command("ask"))
 async def ask_command(message: Message, command: CommandObject):
     if not command.args:
-        await message.answer("❗ После /ask напиши вопрос.\nПример: `/ask Что такое Python?`", parse_mode="Markdown")
+        await message.answer("❗️ После /ask напиши вопрос.\nПример: /ask Что такое Python?", parse_mode="Markdown")
         return
     await ask_ai(message, command.args)
 
